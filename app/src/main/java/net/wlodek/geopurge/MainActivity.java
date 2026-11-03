@@ -98,8 +98,10 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
         );
 
         if (pickingLocation) {
-            TextView title = findViewById(R.id.menuButton);
-            title.setContentDescription("Dotknij mapy, aby wybrać lokalizację");
+            menuButton.setContentDescription(
+                    "Dotknij mapy, aby wybrać lokalizację"
+            );
+
             Toast.makeText(
                     this,
                     "Dotknij mapy, aby wybrać lokalizację strefy",
@@ -154,21 +156,29 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
                         map.addOnMapClickListener(point -> {
                             if (pickingLocation) {
                                 Intent result = new Intent();
-                                result.putExtra("latitude", point.getLatitude());
-                                result.putExtra("longitude", point.getLongitude());
+
+                                result.putExtra(
+                                        "latitude",
+                                        point.getLatitude()
+                                );
+
+                                result.putExtra(
+                                        "longitude",
+                                        point.getLongitude()
+                                );
 
                                 setResult(Activity.RESULT_OK, result);
                                 finish();
                                 overridePendingTransition(0, 0);
+
                                 return true;
                             }
 
                             return false;
                         });
 
-                        if (!pickingLocation) {
-                            checkLocationPermission();
-                        }
+                        // GPS uruchamiamy również podczas wyboru lokalizacji.
+                        checkLocationPermission();
                     }
             );
         });
@@ -258,7 +268,7 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
     }
 
     private void startGps() {
-        if (!mapReady || locationManager == null || pickingLocation) {
+        if (!mapReady || locationManager == null) {
             return;
         }
 
@@ -274,9 +284,22 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
         if (locationUpdatesStarted) return;
 
         try {
-            String provider = fine
-                    ? LocationManager.GPS_PROVIDER
-                    : LocationManager.NETWORK_PROVIDER;
+            String provider;
+
+            if (fine && locationManager.isProviderEnabled(
+                    LocationManager.GPS_PROVIDER)) {
+                provider = LocationManager.GPS_PROVIDER;
+            } else if (locationManager.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER)) {
+                provider = LocationManager.NETWORK_PROVIDER;
+            } else {
+                Toast.makeText(
+                        this,
+                        "Włącz lokalizację w telefonie",
+                        Toast.LENGTH_LONG
+                ).show();
+                return;
+            }
 
             locationManager.requestLocationUpdates(
                     provider, 3000, 5, this
@@ -324,16 +347,20 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
 
         source.setGeoJson(Feature.fromGeometry(point));
 
-        if (firstLocation && !pickingLocation) {
-            map.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(
-                            new LatLng(
-                                    location.getLatitude(),
-                                    location.getLongitude()
-                            ),
-                            16
-                    )
-            );
+        // W trybie wyboru lokalizacji pokazujemy pozycję,
+        // ale nie przesuwamy mapy po każdym odczycie GPS.
+        if (firstLocation) {
+            if (!pickingLocation) {
+                map.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(
+                                new LatLng(
+                                        location.getLatitude(),
+                                        location.getLongitude()
+                                ),
+                                16
+                        )
+                );
+            }
 
             firstLocation = false;
         }
@@ -382,7 +409,7 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
         super.onResume();
         mapView.onResume();
 
-        if (mapReady && !pickingLocation) {
+        if (mapReady) {
             startGps();
         }
     }
