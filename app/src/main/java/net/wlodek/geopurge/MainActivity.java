@@ -1,19 +1,31 @@
+
 package net.wlodek.geopurge;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Bundle;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
 
 import org.maplibre.android.MapLibre;
-import org.maplibre.android.camera.CameraPosition;
 import org.maplibre.android.camera.CameraUpdateFactory;
 import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.maps.MapLibreMap;
@@ -37,19 +49,60 @@ public class MainActivity extends AppCompatActivity
     private static final String SOURCE_ID = "user-location";
     private static final String LAYER_ID = "user-location-layer";
 
+    private static final int DARK = Color.rgb(32, 42, 53);
+
     private MapView mapView;
     private MapLibreMap map;
     private LocationManager locationManager;
 
     private boolean firstLocation = true;
+    private boolean mapReady = false;
+    private boolean locationUpdatesStarted = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        configureSystemBars();
+
         MapLibre.getInstance(this);
 
         setContentView(R.layout.activity_main);
+
+        DrawerLayout drawerLayout = findViewById(R.id.drawerLayout);
+
+        View statusBarSpacer = findViewById(R.id.statusBarSpacer);
+        View drawerStatusBarSpacer = findViewById(R.id.drawerStatusBarSpacer);
+
+        applyTopInset(statusBarSpacer);
+        applyTopInset(drawerStatusBarSpacer);
+
+        View mainRoot = findViewById(R.id.mainRoot);
+        applyBottomInset(mainRoot);
+
+        TextView menuButton = findViewById(R.id.menuButton);
+        TextView navMap = findViewById(R.id.navMap);
+        TextView navFilesDeletion = findViewById(R.id.navFilesDeletion);
+
+        menuButton.setOnClickListener(v ->
+                drawerLayout.openDrawer(Gravity.START)
+        );
+
+        navMap.setOnClickListener(v ->
+                drawerLayout.closeDrawer(Gravity.START)
+        );
+
+        navFilesDeletion.setOnClickListener(v -> {
+            drawerLayout.closeDrawer(Gravity.START);
+
+            Intent intent = new Intent(
+                    MainActivity.this,
+                    FilesDeletionActivity.class
+            );
+
+            startActivity(intent);
+            overridePendingTransition(0, 0);
+        });
 
         mapView = findViewById(R.id.mapView);
         mapView.onCreate(savedInstanceState);
@@ -62,7 +115,7 @@ public class MainActivity extends AppCompatActivity
             map = googleMap;
 
             map.setCameraPosition(
-                    new CameraPosition.Builder()
+                    new org.maplibre.android.camera.CameraPosition.Builder()
                             .target(new LatLng(52.0, 19.0))
                             .zoom(6)
                             .build()
@@ -95,13 +148,83 @@ public class MainActivity extends AppCompatActivity
 
                         style.addLayer(layer);
 
+                        mapReady = true;
+
                         checkLocationPermission();
                     }
             );
         });
     }
 
-    // Sprawdzenie uprawnień lokalizacji
+    private void configureSystemBars() {
+
+        Window window = getWindow();
+
+        WindowCompat.setDecorFitsSystemWindows(window, false);
+
+        window.setStatusBarColor(DARK);
+        window.setNavigationBarColor(DARK);
+
+        WindowCompat.getInsetsController(
+                window,
+                window.getDecorView()
+        ).setAppearanceLightStatusBars(false);
+
+        WindowCompat.getInsetsController(
+                window,
+                window.getDecorView()
+        ).setAppearanceLightNavigationBars(false);
+    }
+
+    private void applyTopInset(View spacer) {
+
+        ViewCompat.setOnApplyWindowInsetsListener(
+                spacer,
+                (view, insets) -> {
+
+                    Insets statusInsets = insets.getInsets(
+                            WindowInsetsCompat.Type.statusBars()
+                                    | WindowInsetsCompat.Type.displayCutout()
+                    );
+
+                    ViewGroup.LayoutParams params =
+                            view.getLayoutParams();
+
+                    params.height = statusInsets.top;
+                    view.setLayoutParams(params);
+
+                    return insets;
+                }
+        );
+
+        ViewCompat.requestApplyInsets(spacer);
+    }
+
+    private void applyBottomInset(View view) {
+
+        final int initialBottom = view.getPaddingBottom();
+
+        ViewCompat.setOnApplyWindowInsetsListener(
+                view,
+                (v, insets) -> {
+
+                    Insets navigationInsets = insets.getInsets(
+                            WindowInsetsCompat.Type.navigationBars()
+                    );
+
+                    v.setPadding(
+                            v.getPaddingLeft(),
+                            v.getPaddingTop(),
+                            v.getPaddingRight(),
+                            initialBottom + navigationInsets.bottom
+                    );
+
+                    return insets;
+                }
+        );
+
+        ViewCompat.requestApplyInsets(view);
+    }
 
     private void checkLocationPermission() {
 
@@ -129,9 +252,11 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
-    // Uruchomienie lokalizacji
-
     private void startGps() {
+
+        if (!mapReady || locationManager == null) {
+            return;
+        }
 
         boolean fine = ActivityCompat.checkSelfPermission(
                 this,
@@ -143,7 +268,13 @@ public class MainActivity extends AppCompatActivity
                 Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
 
-        if (!fine && !coarse) return;
+        if (!fine && !coarse) {
+            return;
+        }
+
+        if (locationUpdatesStarted) {
+            return;
+        }
 
         try {
 
@@ -157,6 +288,8 @@ public class MainActivity extends AppCompatActivity
                     5,
                     this
             );
+
+            locationUpdatesStarted = true;
 
             Location lastLocation =
                     locationManager.getLastKnownLocation(provider);
@@ -175,7 +308,13 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
-    // Aktualizacja pozycji użytkownika
+    private void stopGps() {
+
+        if (locationManager != null && locationUpdatesStarted) {
+            locationManager.removeUpdates(this);
+            locationUpdatesStarted = false;
+        }
+    }
 
     @Override
     public void onLocationChanged(@NonNull Location location) {
@@ -200,8 +339,6 @@ public class MainActivity extends AppCompatActivity
                 Feature.fromGeometry(point)
         );
 
-        // Pierwsze ustawienie kamery na użytkownika
-
         if (firstLocation) {
 
             map.animateCamera(
@@ -217,8 +354,6 @@ public class MainActivity extends AppCompatActivity
             firstLocation = false;
         }
     }
-
-    // Obsługa zgody na lokalizację
 
     @Override
     public void onRequestPermissionsResult(
@@ -255,8 +390,6 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
-    // Cykl życia mapy
-
     @Override
     protected void onStart() {
         super.onStart();
@@ -267,14 +400,15 @@ public class MainActivity extends AppCompatActivity
     protected void onResume() {
         super.onResume();
         mapView.onResume();
+
+        if (mapReady) {
+            startGps();
+        }
     }
 
     @Override
     protected void onPause() {
-
-        if (locationManager != null) {
-            locationManager.removeUpdates(this);
-        }
+        stopGps();
 
         mapView.onPause();
 
