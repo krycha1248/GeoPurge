@@ -2,6 +2,7 @@
 package net.wlodek.geopurge;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -41,14 +42,13 @@ import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
 
-public class MainActivity extends AppCompatActivity
-        implements LocationListener {
+public class MainActivity extends AppCompatActivity implements LocationListener {
+
+    public static final String EXTRA_PICK_LOCATION = "pick_zone_location";
 
     private static final int LOCATION_PERMISSION = 100;
-
     private static final String SOURCE_ID = "user-location";
     private static final String LAYER_ID = "user-location-layer";
-
     private static final int DARK = Color.rgb(32, 42, 53);
 
     private MapView mapView;
@@ -58,51 +58,54 @@ public class MainActivity extends AppCompatActivity
     private boolean firstLocation = true;
     private boolean mapReady = false;
     private boolean locationUpdatesStarted = false;
+    private boolean pickingLocation = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         configureSystemBars();
-
         MapLibre.getInstance(this);
-
         setContentView(R.layout.activity_main);
 
         DrawerLayout drawerLayout = findViewById(R.id.drawerLayout);
 
-        View statusBarSpacer = findViewById(R.id.statusBarSpacer);
-        View drawerStatusBarSpacer = findViewById(R.id.drawerStatusBarSpacer);
-
-        applyTopInset(statusBarSpacer);
-        applyTopInset(drawerStatusBarSpacer);
-
-        View mainRoot = findViewById(R.id.mainRoot);
-        applyBottomInset(mainRoot);
+        applyTopInset(findViewById(R.id.statusBarSpacer));
+        applyTopInset(findViewById(R.id.drawerStatusBarSpacer));
+        applyBottomInset(findViewById(R.id.mainRoot));
 
         TextView menuButton = findViewById(R.id.menuButton);
         TextView navMap = findViewById(R.id.navMap);
         TextView navFilesDeletion = findViewById(R.id.navFilesDeletion);
 
         menuButton.setOnClickListener(v ->
-                drawerLayout.openDrawer(Gravity.START)
-        );
+                drawerLayout.openDrawer(Gravity.START));
 
         navMap.setOnClickListener(v ->
-                drawerLayout.closeDrawer(Gravity.START)
-        );
+                drawerLayout.closeDrawer(Gravity.START));
 
         navFilesDeletion.setOnClickListener(v -> {
             drawerLayout.closeDrawer(Gravity.START);
-
-            Intent intent = new Intent(
+            startActivity(new Intent(
                     MainActivity.this,
                     FilesDeletionActivity.class
-            );
-
-            startActivity(intent);
+            ));
             overridePendingTransition(0, 0);
         });
+
+        pickingLocation = getIntent().getBooleanExtra(
+                EXTRA_PICK_LOCATION, false
+        );
+
+        if (pickingLocation) {
+            TextView title = findViewById(R.id.menuButton);
+            title.setContentDescription("Dotknij mapy, aby wybrać lokalizację");
+            Toast.makeText(
+                    this,
+                    "Dotknij mapy, aby wybrać lokalizację strefy",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
 
         mapView = findViewById(R.id.mapView);
         mapView.onCreate(savedInstanceState);
@@ -110,9 +113,8 @@ public class MainActivity extends AppCompatActivity
         locationManager = (LocationManager)
                 getSystemService(LOCATION_SERVICE);
 
-        mapView.getMapAsync(googleMap -> {
-
-            map = googleMap;
+        mapView.getMapAsync(mapLibreMap -> {
+            map = mapLibreMap;
 
             map.setCameraPosition(
                     new org.maplibre.android.camera.CameraPosition.Builder()
@@ -126,7 +128,6 @@ public class MainActivity extends AppCompatActivity
                             "https://tiles.openfreemap.org/styles/liberty"
                     ),
                     style -> {
-
                         GeoJsonSource source = new GeoJsonSource(
                                 SOURCE_ID,
                                 Feature.fromGeometry(
@@ -150,46 +151,55 @@ public class MainActivity extends AppCompatActivity
 
                         mapReady = true;
 
-                        checkLocationPermission();
+                        map.addOnMapClickListener(point -> {
+                            if (pickingLocation) {
+                                Intent result = new Intent();
+                                result.putExtra("latitude", point.getLatitude());
+                                result.putExtra("longitude", point.getLongitude());
+
+                                setResult(Activity.RESULT_OK, result);
+                                finish();
+                                overridePendingTransition(0, 0);
+                                return true;
+                            }
+
+                            return false;
+                        });
+
+                        if (!pickingLocation) {
+                            checkLocationPermission();
+                        }
                     }
             );
         });
     }
 
     private void configureSystemBars() {
-
         Window window = getWindow();
 
         WindowCompat.setDecorFitsSystemWindows(window, false);
-
         window.setStatusBarColor(DARK);
         window.setNavigationBarColor(DARK);
 
         WindowCompat.getInsetsController(
-                window,
-                window.getDecorView()
+                window, window.getDecorView()
         ).setAppearanceLightStatusBars(false);
 
         WindowCompat.getInsetsController(
-                window,
-                window.getDecorView()
+                window, window.getDecorView()
         ).setAppearanceLightNavigationBars(false);
     }
 
     private void applyTopInset(View spacer) {
-
         ViewCompat.setOnApplyWindowInsetsListener(
                 spacer,
                 (view, insets) -> {
-
                     Insets statusInsets = insets.getInsets(
                             WindowInsetsCompat.Type.statusBars()
                                     | WindowInsetsCompat.Type.displayCutout()
                     );
 
-                    ViewGroup.LayoutParams params =
-                            view.getLayoutParams();
-
+                    ViewGroup.LayoutParams params = view.getLayoutParams();
                     params.height = statusInsets.top;
                     view.setLayoutParams(params);
 
@@ -201,13 +211,11 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void applyBottomInset(View view) {
-
         final int initialBottom = view.getPaddingBottom();
 
         ViewCompat.setOnApplyWindowInsetsListener(
                 view,
                 (v, insets) -> {
-
                     Insets navigationInsets = insets.getInsets(
                             WindowInsetsCompat.Type.navigationBars()
                     );
@@ -227,15 +235,12 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void checkLocationPermission() {
-
         boolean fine = ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
 
         boolean coarse = ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                this, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
 
         if (fine || coarse) {
@@ -253,40 +258,28 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void startGps() {
-
-        if (!mapReady || locationManager == null) {
+        if (!mapReady || locationManager == null || pickingLocation) {
             return;
         }
 
         boolean fine = ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
 
         boolean coarse = ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                this, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED;
 
-        if (!fine && !coarse) {
-            return;
-        }
-
-        if (locationUpdatesStarted) {
-            return;
-        }
+        if (!fine && !coarse) return;
+        if (locationUpdatesStarted) return;
 
         try {
-
             String provider = fine
                     ? LocationManager.GPS_PROVIDER
                     : LocationManager.NETWORK_PROVIDER;
 
             locationManager.requestLocationUpdates(
-                    provider,
-                    3000,
-                    5,
-                    this
+                    provider, 3000, 5, this
             );
 
             locationUpdatesStarted = true;
@@ -299,7 +292,6 @@ public class MainActivity extends AppCompatActivity
             }
 
         } catch (SecurityException e) {
-
             Toast.makeText(
                     this,
                     "Nie można pobrać lokalizacji",
@@ -309,7 +301,6 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void stopGps() {
-
         if (locationManager != null && locationUpdatesStarted) {
             locationManager.removeUpdates(this);
             locationUpdatesStarted = false;
@@ -318,16 +309,12 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void onLocationChanged(@NonNull Location location) {
-
         if (map == null) return;
 
         Style style = map.getStyle();
-
         if (style == null) return;
 
-        GeoJsonSource source =
-                style.getSourceAs(SOURCE_ID);
-
+        GeoJsonSource source = style.getSourceAs(SOURCE_ID);
         if (source == null) return;
 
         Point point = Point.fromLngLat(
@@ -335,12 +322,9 @@ public class MainActivity extends AppCompatActivity
                 location.getLatitude()
         );
 
-        source.setGeoJson(
-                Feature.fromGeometry(point)
-        );
+        source.setGeoJson(Feature.fromGeometry(point));
 
-        if (firstLocation) {
-
+        if (firstLocation && !pickingLocation) {
             map.animateCamera(
                     CameraUpdateFactory.newLatLngZoom(
                             new LatLng(
@@ -362,13 +346,10 @@ public class MainActivity extends AppCompatActivity
             @NonNull int[] grantResults) {
 
         super.onRequestPermissionsResult(
-                requestCode,
-                permissions,
-                grantResults
+                requestCode, permissions, grantResults
         );
 
         if (requestCode == LOCATION_PERMISSION) {
-
             boolean granted = false;
 
             for (int result : grantResults) {
@@ -401,7 +382,7 @@ public class MainActivity extends AppCompatActivity
         super.onResume();
         mapView.onResume();
 
-        if (mapReady) {
+        if (mapReady && !pickingLocation) {
             startGps();
         }
     }
@@ -409,9 +390,7 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onPause() {
         stopGps();
-
         mapView.onPause();
-
         super.onPause();
     }
 
@@ -428,9 +407,7 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    protected void onSaveInstanceState(
-            @NonNull Bundle outState) {
-
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
         super.onSaveInstanceState(outState);
         mapView.onSaveInstanceState(outState);
     }
