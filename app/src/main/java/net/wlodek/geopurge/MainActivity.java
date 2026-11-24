@@ -1,188 +1,497 @@
-
 package net.wlodek.geopurge;
 
 import android.Manifest;
-import android.app.Activity;
+import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanRecord;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.view.Gravity;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.Settings;
+import android.location.LocationManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.ScrollView;
+import android.widget.ImageView;
 import android.widget.TextView;
-import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.graphics.Insets;
+import androidx.core.location.LocationManagerCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.drawerlayout.widget.DrawerLayout;
 
-import org.maplibre.android.MapLibre;
-import org.maplibre.android.camera.CameraUpdateFactory;
-import org.maplibre.android.geometry.LatLng;
-import org.maplibre.android.maps.MapLibreMap;
-import org.maplibre.android.maps.MapView;
-import org.maplibre.android.maps.Style;
-import org.maplibre.android.style.layers.CircleLayer;
-import org.maplibre.android.style.sources.GeoJsonSource;
-import org.maplibre.geojson.Feature;
-import org.maplibre.geojson.Point;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
 
-import static org.maplibre.android.style.layers.PropertyFactory.circleColor;
-import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
-import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
-import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
+public class MainActivity extends AppCompatActivity {
 
-public class MainActivity extends AppCompatActivity implements LocationListener {
-
-    public static final String EXTRA_PICK_LOCATION = "pick_zone_location";
-
-    private static final int LOCATION_PERMISSION = 100;
-    private static final String SOURCE_ID = "user-location";
-    private static final String LAYER_ID = "user-location-layer";
+    private static final int REQUEST_PERMISSIONS = 100;
+    private static final int APPLE_COMPANY_ID = 0x004C;
+    private static final long TICK_MS = 1000;
     private static final int DARK = Color.rgb(32, 42, 53);
 
-    private MapView mapView;
-    private MapLibreMap map;
-    private LocationManager locationManager;
+    private ExhibitRepository repository;
+    private BeaconTracker tracker;
+    private BluetoothLeScanner scanner;
 
-    private boolean firstLocation = true;
-    private boolean mapReady = false;
-    private boolean locationUpdatesStarted = false;
-    private boolean pickingLocation = false;
+    private boolean scanning = false;
+    private boolean askedForPermissions = false;
+    private Integer openKey = null;       // eksponat otwarty w oknie
+    private Integer dismissedKey = null;  // zamknięty X, czeka aż odejdziesz
+    private Runnable buttonAction;
+
+    private TextView statusText;
+    private TextView debugText;
+    private Button actionButton;
+
+    private View overlay;
+    private ScrollView overlayScroll;
+    private ImageView overlayImage;
+    private TextView overlayTitle;
+    private TextView overlayDescription;
+    private OnBackPressedCallback backCallback;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private final Runnable tick = new Runnable() {
+        @Override
+        public void run() {
+            evaluate();
+            handler.postDelayed(this, TICK_MS);
+        }
+    };
+
+    private final ScanCallback callback = new ScanCallback() {
+        @Override
+        public void onScanResult(int callbackType, ScanResult result) {
+            handleResult(result);
+        }
+
+        @Override
+        public void onBatchScanResults(List<ScanResult> results) {
+            for (ScanResult r : results) handleResult(r);
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            scanning = false;
+            showProblem(
+                    "Skanowanie nie powiodło się (kod " + errorCode + ").",
+                    "Spróbuj ponownie",
+                    MainActivity.this::startScanningIfReady
+            );
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         configureSystemBars();
-        MapLibre.getInstance(this);
         setContentView(R.layout.activity_main);
-
-        DrawerLayout drawerLayout = findViewById(R.id.drawerLayout);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         applyTopInset(findViewById(R.id.statusBarSpacer));
-        applyTopInset(findViewById(R.id.drawerStatusBarSpacer));
+        applyTopInset(findViewById(R.id.overlayStatusSpacer));
         applyBottomInset(findViewById(R.id.mainRoot));
+        applyBottomInset(findViewById(R.id.exhibitOverlay));
 
-        TextView menuButton = findViewById(R.id.menuButton);
-        TextView navMap = findViewById(R.id.navMap);
-        TextView navFilesDeletion = findViewById(R.id.navFilesDeletion);
+        statusText = findViewById(R.id.statusText);
+        debugText = findViewById(R.id.debugText);
+        actionButton = findViewById(R.id.actionButton);
 
-        menuButton.setOnClickListener(v ->
-                drawerLayout.openDrawer(Gravity.START));
+        overlay = findViewById(R.id.exhibitOverlay);
+        overlayScroll = findViewById(R.id.overlayScroll);
+        overlayImage = findViewById(R.id.overlayImage);
+        overlayTitle = findViewById(R.id.overlayTitle);
+        overlayDescription = findViewById(R.id.overlayDescription);
 
-        navMap.setOnClickListener(v ->
-                drawerLayout.closeDrawer(Gravity.START));
+        backCallback = new OnBackPressedCallback(false) {
+            @Override
+            public void handleOnBackPressed() {
+                closeOverlay();
+            }
+        };
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
 
-        navFilesDeletion.setOnClickListener(v -> {
-            drawerLayout.closeDrawer(Gravity.START);
-            startActivity(new Intent(
-                    MainActivity.this,
-                    FilesDeletionActivity.class
-            ));
-            overridePendingTransition(0, 0);
+        findViewById(R.id.closeButton).setOnClickListener(
+                v -> closeOverlay());
+
+        actionButton.setOnClickListener(v -> {
+            if (buttonAction != null) buttonAction.run();
         });
 
-        pickingLocation = getIntent().getBooleanExtra(
-                EXTRA_PICK_LOCATION, false
-        );
-
-        if (pickingLocation) {
-            menuButton.setContentDescription(
-                    "Dotknij mapy, aby wybrać lokalizację"
+        try {
+            repository = ExhibitRepository.load(this);
+            tracker = new BeaconTracker(
+                    repository.enterRssi, repository.exitRssi
             );
+        } catch (Exception e) {
+            showProblem(
+                    "Błąd w pliku exhibits.json: " + e.getMessage(),
+                    null, null
+            );
+            return;
+        }
+    }
 
-            Toast.makeText(
-                    this,
-                    "Dotknij mapy, aby wybrać lokalizację strefy",
-                    Toast.LENGTH_LONG
-            ).show();
+    // ------------------------------------------------------------
+    //  Cykl życia
+    // ------------------------------------------------------------
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        startScanningIfReady();
+    }
+
+    @Override
+    protected void onPause() {
+        stopScan();
+        super.onPause();
+    }
+
+    // ------------------------------------------------------------
+    //  Warunki skanowania (uprawnienia, Bluetooth, lokalizacja)
+    // ------------------------------------------------------------
+
+    private String[] requiredPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return new String[]{
+                    Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+            };
+        }
+        return new String[]{Manifest.permission.ACCESS_FINE_LOCATION};
+    }
+
+    private List<String> missingPermissions() {
+        List<String> missing = new ArrayList<>();
+        for (String p : requiredPermissions()) {
+            if (ActivityCompat.checkSelfPermission(this, p)
+                    != PackageManager.PERMISSION_GRANTED) {
+                missing.add(p);
+            }
+        }
+        return missing;
+    }
+
+    private boolean permanentlyDenied(List<String> missing) {
+        if (!askedForPermissions) return false;
+        for (String p : missing) {
+            if (ActivityCompat.shouldShowRequestPermissionRationale(this, p)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void requestPermissions(List<String> missing) {
+        askedForPermissions = true;
+        ActivityCompat.requestPermissions(
+                this, missing.toArray(new String[0]), REQUEST_PERMISSIONS
+        );
+    }
+
+    private void startScanningIfReady() {
+        if (repository == null || scanning) return;
+
+        BluetoothManager manager = getSystemService(BluetoothManager.class);
+        BluetoothAdapter adapter =
+                manager == null ? null : manager.getAdapter();
+
+        if (adapter == null || !getPackageManager()
+                .hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+            showProblem(
+                    "To urządzenie nie obsługuje Bluetooth Low Energy.",
+                    null, null
+            );
+            return;
         }
 
-        mapView = findViewById(R.id.mapView);
-        mapView.onCreate(savedInstanceState);
+        List<String> missing = missingPermissions();
+        if (!missing.isEmpty()) {
+            if (permanentlyDenied(missing)) {
+                showProblem(
+                        "Brak uprawnień do wykrywania eksponatów. "
+                                + "Włącz je w ustawieniach aplikacji.",
+                        "Otwórz ustawienia aplikacji",
+                        () -> startActivity(new Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", getPackageName(), null)
+                        ))
+                );
+            } else {
+                showProblem(
+                        "Aplikacja potrzebuje zgody na wyszukiwanie "
+                                + "urządzeń w pobliżu, aby wykryć eksponaty.",
+                        "Przyznaj uprawnienia",
+                        () -> requestPermissions(missingPermissions())
+                );
+                if (!askedForPermissions) requestPermissions(missing);
+            }
+            return;
+        }
 
-        locationManager = (LocationManager)
-                getSystemService(LOCATION_SERVICE);
-
-        mapView.getMapAsync(mapLibreMap -> {
-            map = mapLibreMap;
-
-            map.setCameraPosition(
-                    new org.maplibre.android.camera.CameraPosition.Builder()
-                            .target(new LatLng(52.0, 19.0))
-                            .zoom(6)
-                            .build()
+        if (!adapter.isEnabled()) {
+            showProblem(
+                    "Bluetooth jest wyłączony.",
+                    "Ustawienia Bluetooth",
+                    () -> startActivity(
+                            new Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             );
+            return;
+        }
 
-            map.setStyle(
-                    new Style.Builder().fromUri(
-                            "https://tiles.openfreemap.org/styles/liberty"
-                    ),
-                    style -> {
-                        GeoJsonSource source = new GeoJsonSource(
-                                SOURCE_ID,
-                                Feature.fromGeometry(
-                                        Point.fromLngLat(19.0, 52.0)
-                                )
-                        );
-
-                        style.addSource(source);
-
-                        CircleLayer layer =
-                                new CircleLayer(LAYER_ID, SOURCE_ID);
-
-                        layer.withProperties(
-                                circleRadius(8f),
-                                circleColor("#1769FF"),
-                                circleStrokeColor("#FFFFFF"),
-                                circleStrokeWidth(2f)
-                        );
-
-                        style.addLayer(layer);
-
-                        mapReady = true;
-
-                        map.addOnMapClickListener(point -> {
-                            if (pickingLocation) {
-                                Intent result = new Intent();
-
-                                result.putExtra(
-                                        "latitude",
-                                        point.getLatitude()
-                                );
-
-                                result.putExtra(
-                                        "longitude",
-                                        point.getLongitude()
-                                );
-
-                                setResult(Activity.RESULT_OK, result);
-                                finish();
-                                overridePendingTransition(0, 0);
-
-                                return true;
-                            }
-
-                            return false;
-                        });
-
-                        // GPS uruchamiamy również podczas wyboru lokalizacji.
-                        checkLocationPermission();
-                    }
+        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm == null || !LocationManagerCompat.isLocationEnabled(lm)) {
+            showProblem(
+                    "Włącz lokalizację w telefonie. Android wymaga jej "
+                            + "do skanowania beaconów BLE.",
+                    "Ustawienia lokalizacji",
+                    () -> startActivity(new Intent(
+                            Settings.ACTION_LOCATION_SOURCE_SETTINGS))
             );
-        });
+            return;
+        }
+
+        scanner = adapter.getBluetoothLeScanner();
+        if (scanner == null) {
+            showProblem(
+                    "Nie można uruchomić skanera Bluetooth.",
+                    "Spróbuj ponownie",
+                    this::startScanningIfReady
+            );
+            return;
+        }
+
+        startScan();
     }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode,
+            @NonNull String[] permissions,
+            @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_PERMISSIONS) {
+            startScanningIfReady();
+        }
+    }
+
+    // ------------------------------------------------------------
+    //  Skanowanie iBeacon
+    // ------------------------------------------------------------
+
+    @SuppressLint("MissingPermission")
+    private void startScan() {
+        if (scanning) return;
+
+        // Filtr sprzętowy: producent Apple + prefiks 0x02 0x15 + nasz UUID.
+        byte[] data = new byte[18];
+        data[0] = 0x02;
+        data[1] = 0x15;
+        System.arraycopy(repository.uuidBytes, 0, data, 2, 16);
+
+        byte[] mask = new byte[18];
+        Arrays.fill(mask, (byte) 0xFF);
+
+        ScanFilter filter = new ScanFilter.Builder()
+                .setManufacturerData(APPLE_COMPANY_ID, data, mask)
+                .build();
+
+        ScanSettings settings = new ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .build();
+
+        try {
+            scanner.startScan(
+                    Collections.singletonList(filter), settings, callback
+            );
+            scanning = true;
+            hideProblem();
+            statusText.setText("Szukam eksponatów w pobliżu…");
+            handler.removeCallbacks(tick);
+            handler.post(tick);
+        } catch (SecurityException | IllegalStateException e) {
+            showProblem(
+                    "Nie udało się uruchomić skanowania: " + e.getMessage(),
+                    "Spróbuj ponownie",
+                    this::startScanningIfReady
+            );
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private void stopScan() {
+        handler.removeCallbacks(tick);
+        if (scanner != null && scanning) {
+            try {
+                scanner.stopScan(callback);
+            } catch (SecurityException | IllegalStateException ignored) {
+                // Bluetooth mógł zostać wyłączony w trakcie skanowania.
+            }
+        }
+        scanning = false;
+    }
+
+    private void handleResult(ScanResult result) {
+        ScanRecord record = result.getScanRecord();
+        if (record == null) return;
+
+        byte[] d = record.getManufacturerSpecificData(APPLE_COMPANY_ID);
+        if (d == null || d.length < 22) return;
+        if (d[0] != 0x02 || d[1] != 0x15) return;
+
+        if (!Arrays.equals(Arrays.copyOfRange(d, 2, 18),
+                repository.uuidBytes)) {
+            return;
+        }
+
+        int major = ((d[18] & 0xFF) << 8) | (d[19] & 0xFF);
+        int minor = ((d[20] & 0xFF) << 8) | (d[21] & 0xFF);
+
+        tracker.add(
+                ExhibitRepository.key(major, minor),
+                result.getRssi(),
+                SystemClock.elapsedRealtime()
+        );
+    }
+
+    // ------------------------------------------------------------
+    //  Logika wyboru eksponatu i UI
+    // ------------------------------------------------------------
+
+    private void evaluate() {
+        Integer key = tracker.evaluate(SystemClock.elapsedRealtime());
+
+        Integer best = tracker.getBestKey();
+        if (best == null) {
+            debugText.setText("Brak beaconów w zasięgu");
+        } else {
+            debugText.setText(String.format(
+                    Locale.US,
+                    "Najsilniejszy beacon: %d / %d  (%.0f dBm)",
+                    best >>> 16, best & 0xFFFF, tracker.getBestAverage()
+            ));
+        }
+
+        // Zamknięty eksponat otworzy się ponownie dopiero po tym,
+        // jak odejdziesz (sygnał spadnie poniżej exitRssi).
+        if (key == null || !key.equals(dismissedKey)) {
+            dismissedKey = null;
+        }
+
+        if (openKey == null && key != null && !key.equals(dismissedKey)) {
+            Exhibit exhibit = repository.find(key);
+            if (exhibit != null) {
+                openOverlay(key, exhibit);
+            }
+        }
+    }
+
+    private void openOverlay(int key, Exhibit exhibit) {
+        openKey = key;
+
+        overlayTitle.setText(exhibit.title);
+        overlayDescription.setText(exhibit.description);
+        showImage(exhibit.image);
+
+        overlayScroll.scrollTo(0, 0);
+        overlay.setVisibility(View.VISIBLE);
+        backCallback.setEnabled(true);
+    }
+
+    private void closeOverlay() {
+        overlay.setVisibility(View.GONE);
+        backCallback.setEnabled(false);
+        dismissedKey = openKey;
+        openKey = null;
+    }
+
+    private void showImage(String name) {
+        if (name == null || name.isEmpty()) {
+            overlayImage.setVisibility(View.GONE);
+            return;
+        }
+
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream in = getAssets().open("images/" + name)) {
+                BitmapFactory.decodeStream(in, null, bounds);
+            }
+
+            int target = 1080;
+            int sample = 1;
+            while (bounds.outWidth / (sample * 2) >= target) sample *= 2;
+
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+
+            Bitmap bitmap;
+            try (InputStream in = getAssets().open("images/" + name)) {
+                bitmap = BitmapFactory.decodeStream(in, null, options);
+            }
+
+            if (bitmap == null) {
+                overlayImage.setVisibility(View.GONE);
+            } else {
+                overlayImage.setImageBitmap(bitmap);
+                overlayImage.setVisibility(View.VISIBLE);
+            }
+        } catch (Exception e) {
+            overlayImage.setVisibility(View.GONE);
+        }
+    }
+
+    private void showProblem(String message, String buttonLabel,
+                             Runnable action) {
+        statusText.setText(message);
+        buttonAction = action;
+
+        if (buttonLabel != null && action != null) {
+            actionButton.setText(buttonLabel);
+            actionButton.setVisibility(View.VISIBLE);
+        } else {
+            actionButton.setVisibility(View.GONE);
+        }
+    }
+
+    private void hideProblem() {
+        buttonAction = null;
+        actionButton.setVisibility(View.GONE);
+    }
+
+    // ------------------------------------------------------------
+    //  Paski systemowe (jak w oryginalnym projekcie)
+    // ------------------------------------------------------------
 
     private void configureSystemBars() {
         Window window = getWindow();
@@ -242,206 +551,5 @@ public class MainActivity extends AppCompatActivity implements LocationListener 
         );
 
         ViewCompat.requestApplyInsets(view);
-    }
-
-    private void checkLocationPermission() {
-        boolean fine = ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED;
-
-        boolean coarse = ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED;
-
-        if (fine || coarse) {
-            startGps();
-        } else {
-            ActivityCompat.requestPermissions(
-                    this,
-                    new String[]{
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                    },
-                    LOCATION_PERMISSION
-            );
-        }
-    }
-
-    private void startGps() {
-        if (!mapReady || locationManager == null) {
-            return;
-        }
-
-        boolean fine = ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED;
-
-        boolean coarse = ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED;
-
-        if (!fine && !coarse) return;
-        if (locationUpdatesStarted) return;
-
-        try {
-            String provider;
-
-            if (fine && locationManager.isProviderEnabled(
-                    LocationManager.GPS_PROVIDER)) {
-                provider = LocationManager.GPS_PROVIDER;
-            } else if (locationManager.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER)) {
-                provider = LocationManager.NETWORK_PROVIDER;
-            } else {
-                Toast.makeText(
-                        this,
-                        "Włącz lokalizację w telefonie",
-                        Toast.LENGTH_LONG
-                ).show();
-                return;
-            }
-
-            locationManager.requestLocationUpdates(
-                    provider, 3000, 5, this
-            );
-
-            locationUpdatesStarted = true;
-
-            Location lastLocation =
-                    locationManager.getLastKnownLocation(provider);
-
-            if (lastLocation != null) {
-                onLocationChanged(lastLocation);
-            }
-
-        } catch (SecurityException e) {
-            Toast.makeText(
-                    this,
-                    "Nie można pobrać lokalizacji",
-                    Toast.LENGTH_SHORT
-            ).show();
-        }
-    }
-
-    private void stopGps() {
-        if (locationManager != null && locationUpdatesStarted) {
-            locationManager.removeUpdates(this);
-            locationUpdatesStarted = false;
-        }
-    }
-
-    @Override
-    public void onLocationChanged(@NonNull Location location) {
-        if (map == null) return;
-
-        Style style = map.getStyle();
-        if (style == null) return;
-
-        GeoJsonSource source = style.getSourceAs(SOURCE_ID);
-        if (source == null) return;
-
-        Point point = Point.fromLngLat(
-                location.getLongitude(),
-                location.getLatitude()
-        );
-
-        source.setGeoJson(Feature.fromGeometry(point));
-
-        // W trybie wyboru lokalizacji pokazujemy pozycję,
-        // ale nie przesuwamy mapy po każdym odczycie GPS.
-        if (firstLocation) {
-            if (!pickingLocation) {
-                map.animateCamera(
-                        CameraUpdateFactory.newLatLngZoom(
-                                new LatLng(
-                                        location.getLatitude(),
-                                        location.getLongitude()
-                                ),
-                                16
-                        )
-                );
-            }
-
-            firstLocation = false;
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(
-            int requestCode,
-            @NonNull String[] permissions,
-            @NonNull int[] grantResults) {
-
-        super.onRequestPermissionsResult(
-                requestCode, permissions, grantResults
-        );
-
-        if (requestCode == LOCATION_PERMISSION) {
-            boolean granted = false;
-
-            for (int result : grantResults) {
-                if (result == PackageManager.PERMISSION_GRANTED) {
-                    granted = true;
-                    break;
-                }
-            }
-
-            if (granted) {
-                startGps();
-            } else {
-                Toast.makeText(
-                        this,
-                        "Brak dostępu do lokalizacji",
-                        Toast.LENGTH_LONG
-                ).show();
-            }
-        }
-    }
-
-    @Override
-    protected void onStart() {
-        super.onStart();
-        mapView.onStart();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        mapView.onResume();
-
-        if (mapReady) {
-            startGps();
-        }
-    }
-
-    @Override
-    protected void onPause() {
-        stopGps();
-        mapView.onPause();
-        super.onPause();
-    }
-
-    @Override
-    protected void onStop() {
-        mapView.onStop();
-        super.onStop();
-    }
-
-    @Override
-    protected void onDestroy() {
-        mapView.onDestroy();
-        super.onDestroy();
-    }
-
-    @Override
-    protected void onSaveInstanceState(@NonNull Bundle outState) {
-        super.onSaveInstanceState(outState);
-        mapView.onSaveInstanceState(outState);
-    }
-
-    @Override
-    public void onLowMemory() {
-        super.onLowMemory();
-        mapView.onLowMemory();
     }
 }

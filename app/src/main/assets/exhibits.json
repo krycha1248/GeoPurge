@@ -1,0 +1,28 @@
+{
+  "uuid": "B9407F30-F5F8-466E-AFF9-25556B57FE6D",
+  "enterRssi": -30,
+  "exitRssi": -40,
+  "exhibits": [
+    {
+      "major": 1,
+      "minor": 1,
+      "title": "Wazon z okresu Ming",
+      "description": "Porcelanowy wazon w kształcie butelki, wykonany w XV wieku w jednym z cesarskich warsztatów w Jingdezhen. Biała, półprzezroczysta porcelana zdobiona jest podszkliwną kobaltową błękitną dekoracją: falistymi wstęgami, motywem kwiatowym i pasami wokół szyjki oraz podstawy.\n\nKobalt sprowadzano wówczas z Persji, a jego intensywny kolor uzyskiwano w bardzo wysokiej temperaturze wypału, powyżej 1300°C. Takie naczynia były symbolem prestiżu i trafiały do dworów oraz na zagraniczne rynki, m.in. do Europy i na Bliski Wschód.\n\nDo dziś zachowało się niewiele podobnych wazonów w tak dobrym stanie, a ich dekoracja uchodzi za wzór dla późniejszej porcelany w całym świecie.\n\n(Opis przykładowy: zastąp go prawdziwym tekstem kuratora.)",
+      "image": "wazon.png"
+    },
+    {
+      "major": 1,
+      "minor": 2,
+      "title": "Zbroja rycerska",
+      "description": "Zbroja płytowa z XVI wieku. Opis eksponatu wpisz tutaj.",
+      "image": ""
+    },
+    {
+      "major": 1,
+      "minor": 3,
+      "title": "Mapa dawnej Polski",
+      "description": "Ręcznie kolorowana mapa z XVII wieku. Opis eksponatu wpisz tutaj.",
+      "image": ""
+    }
+  ]
+}
